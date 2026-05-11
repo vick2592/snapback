@@ -47,14 +47,25 @@ function handleQuickReload(tabId) {
 }
 
 // ─── Manual YouTube Reload (no cooldown, user-initiated) ─────────────────────
+// Uses actual browser goBack → goForward (the original "neighbor's trick").
+// BFCache restores the YouTube page state before the ad, without triggering
+// a fresh page load that would cause YouTube to serve a new pre-roll.
 
 function handleManualReloadYT(msg, tabId) {
   if (!tabId) return;
-  const { youtubeUrl, videoId, timestamp } = msg;
-  pendingForward.set(tabId, { youtubeUrl, videoId, timestamp });
-  const relayUrl = chrome.runtime.getURL('relay.html');
-  chrome.tabs.update(tabId, { url: relayUrl }, () => {
-    void chrome.runtime.lastError;
+
+  chrome.tabs.goBack(tabId, () => {
+    if (chrome.runtime.lastError) {
+      // No back history available — just reload the page
+      chrome.tabs.reload(tabId);
+      return;
+    }
+    // Give the back navigation a moment to settle, then go forward
+    setTimeout(() => {
+      chrome.tabs.goForward(tabId, () => {
+        void chrome.runtime.lastError;
+      });
+    }, 300);
   });
 }
 

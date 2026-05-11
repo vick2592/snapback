@@ -10,11 +10,6 @@
   // ─── Constants ──────────────────────────────────────────────────────────────
 
   const POLL_INTERVAL_MS = 500;
-  const AD_SELECTORS = [
-    '#movie_player.ad-showing',
-    '.ytp-ad-player-overlay',
-    '.ytp-ad-module[data-layer]',
-  ];
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -32,7 +27,25 @@
   }
 
   function isAdPlaying() {
-    return AD_SELECTORS.some((sel) => document.querySelector(sel) !== null);
+    // Primary: ad-showing class on the player element
+    const player = document.querySelector('#movie_player, .html5-video-player');
+    if (player && (player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting'))) {
+      return true;
+    }
+    // Secondary: visible ad UI elements (offsetParent ensures they are visible)
+    const adEls = [
+      '.ytp-ad-player-overlay-layout',
+      '.ytp-ad-player-overlay',
+      '.ytp-ad-text',
+      '.ytp-ad-simple-ad-badge',
+      '.ytp-ad-progress-list',
+      '.ytp-ad-skip-button-container',
+      '.ytp-ad-module',
+    ];
+    return adEls.some((sel) => {
+      const el = document.querySelector(sel);
+      return el && el.offsetParent !== null;
+    });
   }
 
   // ─── 1. Timestamp Restoration ────────────────────────────────────────────────
@@ -172,21 +185,24 @@
     // which resets it after 6s once we land back on YouTube
   }
 
-  // MutationObserver watching for the ad-showing class on #movie_player
+  // MutationObserver watching for ad class changes AND ad element injection
   let adObserver = null;
 
   function startAdObserver() {
-    const player = document.querySelector('#movie_player');
-    if (!player || adObserver) return;
+    if (adObserver) return;
+    // Watch the whole player container so we catch both class changes
+    // on the player AND new ad UI elements injected as children
+    const target = document.querySelector('#player-container-outer, #player-container, ytd-player, #player') || document.body;
 
     adObserver = new MutationObserver(() => {
       if (isAdPlaying()) attemptSkip();
     });
 
-    adObserver.observe(player, {
+    adObserver.observe(target, {
       attributes: true,
       attributeFilter: ['class'],
-      subtree: false,
+      childList: true,
+      subtree: true,
     });
   }
 
@@ -294,6 +310,7 @@
 
   restoreTimestamp();
   waitForPlayer();
+  console.debug('[QuickReload] YouTube script active');
 
   // Cleanup on tab unload
   window.addEventListener('pagehide', () => {
