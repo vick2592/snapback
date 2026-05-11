@@ -36,51 +36,57 @@
 
   let skipLock = false;
 
-  // Wait until the ad-showing class is actually gone before releasing the lock.
-  // This prevents hammering the skip button while YouTube transitions between ads.
-  function waitForAdClear(attempts) {
-    attempts = attempts || 0;
+  function releaseWhenClear(video, seekInterval) {
     if (!isAdPlaying()) {
+      clearInterval(seekInterval);
+      if (video) { video.muted = false; video.playbackRate = 1; }
       skipLock = false;
-      console.log('[QuickReload] Ad cleared after', attempts, 'checks');
-      return;
+      console.log('[QuickReload] Ad cleared.');
     }
-    if (attempts > 30) {
-      // ~6s passed and ad-showing still set — try skipping again
-      skipLock = false;
-      return;
-    }
-    setTimeout(function() { waitForAdClear(attempts + 1); }, 200);
   }
 
   function attemptSkip() {
     if (skipLock || !isAdPlaying()) return;
     skipLock = true;
-    console.log('[QuickReload] Ad detected, attempting skip');
+    console.log('[QuickReload] Ad detected — skipping');
 
-    // Tier 1 — click the native skip button (skippable ads)
-    const skipBtn = getSkipButton();
-    if (skipBtn) {
-      skipBtn.click();
-      console.log('[QuickReload] Clicked skip button');
-      // Wait 800ms for YouTube to process the click, then poll for ad-clear
-      setTimeout(function() { waitForAdClear(0); }, 800);
-      return;
-    }
-
-    // Tier 2 — seek the ad video to its end (non-skippable ads)
     const video = getVideo();
-    if (video && isFinite(video.duration) && video.duration > 0) {
-      console.log('[QuickReload] Seeking ad to end (duration:', video.duration, ')');
-      try {
-        video.currentTime = video.duration;
-      } catch (e) {
-        console.log('[QuickReload] Seek blocked:', e.message);
+
+    // Immediately: seek ad to its end + silent 16x speed simultaneously.
+    // We're safe to do this now because detection only fires on the confirmed
+    // ad-showing class that YouTube itself sets on #movie_player.
+    if (video) {
+      try { video.muted = true; } catch(e) {}
+      try { video.playbackRate = 16; } catch(e) {}
+      if (isFinite(video.duration) && video.duration > 0) {
+        try { video.currentTime = video.duration; } catch(e) {}
       }
     }
 
-    // Poll for ad-clear after seek attempt
-    setTimeout(function() { waitForAdClear(0); }, 800);
+    // Click skip button immediately if already visible
+    var skipBtn = getSkipButton();
+    if (skipBtn) skipBtn.click();
+
+    // Keep hammering every 300ms: re-seek + re-click skip button as YouTube
+    // may reset currentTime or the button may appear mid-ad.
+    var seekInterval = setInterval(function() {
+      if (!isAdPlaying()) {
+        releaseWhenClear(video, seekInterval);
+        return;
+      }
+      var btn = getSkipButton();
+      if (btn) { btn.click(); console.log('[QuickReload] Clicked skip button'); }
+      if (video && isFinite(video.duration) && video.duration > 0) {
+        try { video.currentTime = video.duration; } catch(e) {}
+      }
+    }, 300);
+
+    // Hard safety release after 30s so nothing gets stuck
+    setTimeout(function() {
+      clearInterval(seekInterval);
+      if (video) { video.muted = false; video.playbackRate = 1; }
+      skipLock = false;
+    }, 30000);
   }
 
   // ─── Observer — watch ONLY #movie_player class attribute ──────────────────────
