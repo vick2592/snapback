@@ -1,0 +1,84 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #111827;
+  color: #f3f4f6;
+  min-width: 220px;
+}
+
+.container {
+  padding: 20px 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ── Brand ──────────────────────────────── */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo svg {
+  display: block;
+}
+
+.title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #f9fafb;
+}
+
+.tagline {
+  font-size: 11px;
+  color: #6b7280;
+  font-style: italic;
+}
+
+/* ── Button ─────────────────────────────── */
+.reload-btn {
+  width: 100%;
+  padding: 10px 0;
+  border: none;
+  border-radius: 8px;
+  background: #4f8ef7;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.01em;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.reload-btn:hover {
+  background: #3b7de8;
+}
+
+.reload-btn:active {
+  transform: scale(0.97);
+  background: #2f6fd4;
+}
+
+.reload-btn.fired {
+  background: #16a34a;
+}
+
+/* ── Hint ───────────────────────────────── */
+.hint {
+  font-size: 11px;
+  color: #4b5563;
+  text-align: center;
+}
