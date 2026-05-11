@@ -4,7 +4,6 @@
   "version": "1.0.0",
   "description": "Lightning-fast page reload utility.",
   "permissions": [
-    "storage",
     "tabs",
     "activeTab"
   ],

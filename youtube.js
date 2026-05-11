@@ -1,9 +1,8 @@
 // youtube.js — QuickReload YouTube content script
 // Responsibilities:
-//   1. Track video timestamp every 500ms → chrome.storage.session
-//   2. Detect ads via MutationObserver + polling fallback
-//   3. On ad detected → notify background to navigate away & back
-//   4. On page load → check for saved timestamp (_qr_ts param) and seek
+//   1. Detect ads via MutationObserver + polling fallback
+//   2. On ad detected → notify background to navigate away & back
+//   3. On page load → check for saved timestamp (_qr_ts param) and seek
 
 (function () {
   'use strict';
@@ -36,42 +35,7 @@
     return AD_SELECTORS.some((sel) => document.querySelector(sel) !== null);
   }
 
-  function saveTimestamp(videoId, timestamp) {
-    if (!videoId || timestamp == null || timestamp < 1) return;
-    chrome.storage.session.set({ [`yt_ts_${videoId}`]: timestamp });
-  }
-
-  function getTabId() {
-    // chrome.runtime.id is stable within the extension context; we use a
-    // separate storage key scoped to the tab via the URL + videoId.
-    return null; // not directly accessible in content scripts; handled via storage keys
-  }
-
-  // ─── 1. Timestamp Tracker ────────────────────────────────────────────────────
-
-  let trackingInterval = null;
-
-  function startTracking() {
-    if (trackingInterval) return;
-    trackingInterval = setInterval(() => {
-      const video = getVideoEl();
-      const videoId = getVideoId();
-      if (!video || !videoId) return;
-      // Only save during normal playback (not during ads, not at 0)
-      if (!isAdPlaying() && video.currentTime > 1) {
-        saveTimestamp(videoId, video.currentTime);
-      }
-    }, POLL_INTERVAL_MS);
-  }
-
-  function stopTracking() {
-    if (trackingInterval) {
-      clearInterval(trackingInterval);
-      trackingInterval = null;
-    }
-  }
-
-  // ─── 2. Timestamp Restoration ────────────────────────────────────────────────
+  // ─── 1. Timestamp Restoration ────────────────────────────────────────────────
   // Background appends ?_qr_ts=<seconds> when navigating back after a skip.
 
   function restoreTimestamp() {
@@ -101,7 +65,7 @@
     setTimeout(() => waitForSeekable(targetTime, attempts + 1), 250);
   }
 
-  // ─── 3. Ad Detection & Skip ──────────────────────────────────────────────────
+  // ─── 2. Ad Detection & Skip ──────────────────────────────────────────────────
 
   let adSkipPending = false;
 
@@ -184,7 +148,7 @@
     }
   }
 
-  // ─── 4. Player Ready Wait ────────────────────────────────────────────────────
+  // ─── 3. Player Ready Wait ────────────────────────────────────────────────────
   // YouTube SPA: the player may not exist yet on initial load. Poll until ready.
 
   function waitForPlayer(attempts = 0) {
@@ -194,7 +158,6 @@
     const video = getVideoEl();
 
     if (player && video) {
-      startTracking();
       startAdObserver();
       startAdPolling();
       return;
@@ -203,7 +166,7 @@
     setTimeout(() => waitForPlayer(attempts + 1), 250);
   }
 
-  // ─── 5. YouTube SPA Navigation Handling ─────────────────────────────────────
+  // ─── 4. YouTube SPA Navigation Handling ─────────────────────────────────────
   // YouTube changes pages via pushState/replaceState without full reloads.
   // We hook into these to reset & reinitialise on each "page" change.
 
@@ -216,7 +179,6 @@
     currentVideoId = newVideoId;
 
     // Tear down existing monitors
-    stopTracking();
     stopAdObserver();
     stopAdPolling();
     adSkipPending = false;
@@ -249,7 +211,6 @@
 
   // Cleanup on tab unload
   window.addEventListener('pagehide', () => {
-    stopTracking();
     stopAdObserver();
     stopAdPolling();
   });
