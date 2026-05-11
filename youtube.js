@@ -36,7 +36,7 @@
   }
 
   // ─── 1. Timestamp Restoration ────────────────────────────────────────────────
-  // Background appends ?_qr_ts=<seconds> when navigating back after a skip.
+  // Background appends ?_qr_ts=<seconds> when navigating back after a relay skip.
 
   function restoreTimestamp() {
     const params = new URLSearchParams(window.location.search);
@@ -47,6 +47,11 @@
     const cleanUrl = new URL(window.location.href);
     cleanUrl.searchParams.delete('_qr_ts');
     window.history.replaceState(null, '', cleanUrl.toString());
+
+    // Grace period: suppress ad detection for 6s after relay navigation lands.
+    // Without this, YouTube's new pre-roll ad triggers another skip → infinite loop.
+    adSkipPending = true;
+    setTimeout(() => { adSkipPending = false; }, 6000);
 
     // Wait for the <video> element and for it to have loaded enough data to seek
     waitForSeekable(qrTs);
@@ -66,33 +71,96 @@
   }
 
   // ─── 2. Ad Detection & Skip ──────────────────────────────────────────────────
+  // Four tiers, least invasive first. Only tier 4 causes a page navigation —
+  // which is what was creating the infinite ad loop.
 
   let adSkipPending = false;
+  let fastForwardInterval = null;
+
+  function stopFastForward() {
+    if (fastForwardInterval) {
+      clearInterval(fastForwardInterval);
+      fastForwardInterval = null;
+    }
+    const video = getVideoEl();
+    if (video) {
+      video.muted = false;
+      video.playbackRate = 1;
+    }
+  }
 
   function attemptSkip() {
     if (adSkipPending) return;
 
-    const videoId = getVideoId();
     const video = getVideoEl();
+    const videoId = getVideoId();
     const timestamp = video?.currentTime ?? 0;
 
-    // Safety: don't skip if video is nearly over (< 5s remaining)
-    if (video && video.duration && video.duration - timestamp < 5) return;
+    // Safety: don't interfere if main video is nearly over
+    if (video && video.duration && video.duration - timestamp < 5 && !isAdPlaying()) return;
 
     adSkipPending = true;
 
-    // Try clicking the native YouTube skip button first (low-cost path)
-    const skipBtn = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern');
+    // ── Tier 1: native YouTube skip button ───────────────────────────────────
+    const skipBtn = document.querySelector(
+      '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button'
+    );
     if (skipBtn) {
       skipBtn.click();
-      // Give YouTube 1s to clear the ad naturally before heavier intervention
-      setTimeout(() => {
-        adSkipPending = false;
-      }, 1500);
+      setTimeout(() => { adSkipPending = false; }, 1500);
       return;
     }
 
-    // Heavy path: tell background to navigate away & back (resets ad state)
+    // ── Tier 2: jump ad video to its end (force natural ad completion) ───────
+    // Works on non-skippable ads — sets the ad <video> currentTime to duration.
+    if (video && video.duration && isFinite(video.duration) && video.duration > 0) {
+      try {
+        video.currentTime = video.duration;
+        setTimeout(() => {
+          if (!isAdPlaying()) {
+            adSkipPending = false;
+            return;
+          }
+          // Didn't clear — escalate to tier 3
+          adSkipPending = false;
+          attemptSkip();
+        }, 800);
+        return;
+      } catch {
+        // Seek was blocked — fall through to tier 3
+      }
+    }
+
+    // ── Tier 3: mute + 16× speed (silent fast-forward) ───────────────────────
+    // Ad plays 16× faster silently. No navigation, no new ad served by YouTube.
+    if (video) {
+      try {
+        video.muted = true;
+        video.playbackRate = 16;
+
+        fastForwardInterval = setInterval(() => {
+          if (!isAdPlaying()) {
+            stopFastForward();
+            adSkipPending = false;
+          }
+        }, 300);
+
+        // Hard timeout: if still in ad after 15s at 16× something is wrong
+        setTimeout(() => {
+          if (fastForwardInterval) {
+            stopFastForward();
+            adSkipPending = false;
+            // Escalate to tier 4 only after tier 3 fails
+            attemptSkip();
+          }
+        }, 15000);
+        return;
+      } catch {
+        // Fall through to tier 4
+      }
+    }
+
+    // ── Tier 4: relay navigation (last resort — can cause YouTube to serve new ads) ─
     chrome.runtime.sendMessage({
       action: 'skipAd',
       youtubeUrl: window.location.href,
@@ -100,10 +168,8 @@
       timestamp,
     });
 
-    // Reset flag after background cooldown clears (3s) — ready for next ad
-    setTimeout(() => {
-      adSkipPending = false;
-    }, 3500);
+    // adSkipPending stays true — restoreTimestamp() will apply the grace period
+    // which resets it after 6s once we land back on YouTube
   }
 
   // MutationObserver watching for the ad-showing class on #movie_player
@@ -181,6 +247,7 @@
     // Tear down existing monitors
     stopAdObserver();
     stopAdPolling();
+    stopFastForward();
     adSkipPending = false;
 
     // Restart for the new video
@@ -232,5 +299,6 @@
   window.addEventListener('pagehide', () => {
     stopAdObserver();
     stopAdPolling();
+    stopFastForward();
   });
 })();
