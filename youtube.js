@@ -36,6 +36,23 @@
 
   let skipLock = false;
 
+  // Wait until the ad-showing class is actually gone before releasing the lock.
+  // This prevents hammering the skip button while YouTube transitions between ads.
+  function waitForAdClear(attempts) {
+    attempts = attempts || 0;
+    if (!isAdPlaying()) {
+      skipLock = false;
+      console.log('[QuickReload] Ad cleared after', attempts, 'checks');
+      return;
+    }
+    if (attempts > 30) {
+      // ~6s passed and ad-showing still set — try skipping again
+      skipLock = false;
+      return;
+    }
+    setTimeout(function() { waitForAdClear(attempts + 1); }, 200);
+  }
+
   function attemptSkip() {
     if (skipLock || !isAdPlaying()) return;
     skipLock = true;
@@ -46,7 +63,8 @@
     if (skipBtn) {
       skipBtn.click();
       console.log('[QuickReload] Clicked skip button');
-      setTimeout(() => { skipLock = false; }, 2000);
+      // Wait 800ms for YouTube to process the click, then poll for ad-clear
+      setTimeout(function() { waitForAdClear(0); }, 800);
       return;
     }
 
@@ -61,8 +79,8 @@
       }
     }
 
-    // Release lock after 3s — allow re-try if the ad is still running
-    setTimeout(() => { skipLock = false; }, 3000);
+    // Poll for ad-clear after seek attempt
+    setTimeout(function() { waitForAdClear(0); }, 800);
   }
 
   // ─── Observer — watch ONLY #movie_player class attribute ──────────────────────
