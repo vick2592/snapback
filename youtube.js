@@ -1,321 +1,193 @@
 // youtube.js — QuickReload YouTube content script
-// Responsibilities:
-//   1. Detect ads via MutationObserver + polling fallback
-//   2. On ad detected → notify background to navigate away & back
-//   3. On page load → check for saved timestamp (_qr_ts param) and seek
 
 (function () {
   'use strict';
 
-  // ─── Constants ──────────────────────────────────────────────────────────────
+  // ─── Ad Detection ─────────────────────────────────────────────────────────────
+  // ONLY trust the ad-showing / ad-interrupting class on #movie_player.
+  // These are set by YouTube itself and are the most reliable signal.
+  // We deliberately do NOT use subtree/childList mutation watching because
+  // that fires hundreds of times per second and causes false positives on
+  // the main video.
 
-  const POLL_INTERVAL_MS = 500;
-
-  // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-  function getVideoEl() {
-    return document.querySelector('video');
-  }
-
+  function getPlayer()  { return document.querySelector('#movie_player'); }
+  function getVideo()   { return document.querySelector('video'); }
   function getVideoId() {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      return params.get('v') || null;
-    } catch {
-      return null;
-    }
+    try { return new URLSearchParams(location.search).get('v') || null; }
+    catch { return null; }
   }
 
   function isAdPlaying() {
-    // Primary: ad-showing class on the player element
-    const player = document.querySelector('#movie_player, .html5-video-player');
-    if (player && (player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting'))) {
-      return true;
-    }
-    // Secondary: visible ad UI elements (offsetParent ensures they are visible)
-    const adEls = [
-      '.ytp-ad-player-overlay-layout',
-      '.ytp-ad-player-overlay',
-      '.ytp-ad-text',
-      '.ytp-ad-simple-ad-badge',
-      '.ytp-ad-progress-list',
-      '.ytp-ad-skip-button-container',
-      '.ytp-ad-module',
-    ];
-    return adEls.some((sel) => {
-      const el = document.querySelector(sel);
-      return el && el.offsetParent !== null;
-    });
+    const player = getPlayer();
+    if (!player) return false;
+    return player.classList.contains('ad-showing') ||
+           player.classList.contains('ad-interrupting');
   }
 
-  // ─── 1. Timestamp Restoration ────────────────────────────────────────────────
-  // Background appends ?_qr_ts=<seconds> when navigating back after a relay skip.
-
-  function restoreTimestamp() {
-    const params = new URLSearchParams(window.location.search);
-    const qrTs = parseFloat(params.get('_qr_ts'));
-    if (!qrTs || qrTs < 1) return;
-
-    // Remove the param from the URL bar (cosmetic cleanup) without a reload
-    const cleanUrl = new URL(window.location.href);
-    cleanUrl.searchParams.delete('_qr_ts');
-    window.history.replaceState(null, '', cleanUrl.toString());
-
-    // Grace period: suppress ad detection for 6s after relay navigation lands.
-    // Without this, YouTube's new pre-roll ad triggers another skip → infinite loop.
-    adSkipPending = true;
-    setTimeout(() => { adSkipPending = false; }, 6000);
-
-    // Wait for the <video> element and for it to have loaded enough data to seek
-    waitForSeekable(qrTs);
-  }
-
-  function waitForSeekable(targetTime, attempts = 0) {
-    if (attempts > 40) return; // give up after ~10s
-
-    const video = getVideoEl();
-    if (video && video.readyState >= 1 && video.duration > targetTime) {
-      // Seek slightly before to give a moment of context
-      video.currentTime = Math.max(0, targetTime - 1);
-      return;
-    }
-
-    setTimeout(() => waitForSeekable(targetTime, attempts + 1), 250);
-  }
-
-  // ─── 2. Ad Detection & Skip ──────────────────────────────────────────────────
-  // Four tiers, least invasive first. Only tier 4 causes a page navigation —
-  // which is what was creating the infinite ad loop.
-
-  let adSkipPending = false;
-  let fastForwardInterval = null;
-
-  function stopFastForward() {
-    if (fastForwardInterval) {
-      clearInterval(fastForwardInterval);
-      fastForwardInterval = null;
-    }
-    const video = getVideoEl();
-    if (video) {
-      video.muted = false;
-      video.playbackRate = 1;
-    }
-  }
-
-  function attemptSkip() {
-    if (adSkipPending) return;
-
-    const video = getVideoEl();
-    const videoId = getVideoId();
-    const timestamp = video?.currentTime ?? 0;
-
-    // Safety: don't interfere if main video is nearly over
-    if (video && video.duration && video.duration - timestamp < 5 && !isAdPlaying()) return;
-
-    adSkipPending = true;
-
-    // ── Tier 1: native YouTube skip button ───────────────────────────────────
-    const skipBtn = document.querySelector(
+  function getSkipButton() {
+    return document.querySelector(
       '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button'
     );
+  }
+
+  // ─── Skip Logic ───────────────────────────────────────────────────────────────
+  // Two safe tiers only. No 16x speed (fires on real video if detection wrong).
+  // No relay navigation (YouTube serves new pre-roll on fresh page load).
+
+  let skipLock = false;
+
+  function attemptSkip() {
+    if (skipLock || !isAdPlaying()) return;
+    skipLock = true;
+    console.log('[QuickReload] Ad detected, attempting skip');
+
+    // Tier 1 — click the native skip button (skippable ads)
+    const skipBtn = getSkipButton();
     if (skipBtn) {
       skipBtn.click();
-      setTimeout(() => { adSkipPending = false; }, 1500);
+      console.log('[QuickReload] Clicked skip button');
+      setTimeout(() => { skipLock = false; }, 2000);
       return;
     }
 
-    // ── Tier 2: jump ad video to its end (force natural ad completion) ───────
-    // Works on non-skippable ads — sets the ad <video> currentTime to duration.
-    if (video && video.duration && isFinite(video.duration) && video.duration > 0) {
+    // Tier 2 — seek the ad video to its end (non-skippable ads)
+    const video = getVideo();
+    if (video && isFinite(video.duration) && video.duration > 0) {
+      console.log('[QuickReload] Seeking ad to end (duration:', video.duration, ')');
       try {
         video.currentTime = video.duration;
-        setTimeout(() => {
-          if (!isAdPlaying()) {
-            adSkipPending = false;
-            return;
-          }
-          // Didn't clear — escalate to tier 3
-          adSkipPending = false;
-          attemptSkip();
-        }, 800);
-        return;
-      } catch {
-        // Seek was blocked — fall through to tier 3
+      } catch (e) {
+        console.log('[QuickReload] Seek blocked:', e.message);
       }
     }
 
-    // ── Tier 3: mute + 16× speed (silent fast-forward) ───────────────────────
-    // Ad plays 16× faster silently. No navigation, no new ad served by YouTube.
-    if (video) {
-      try {
-        video.muted = true;
-        video.playbackRate = 16;
-
-        fastForwardInterval = setInterval(() => {
-          if (!isAdPlaying()) {
-            stopFastForward();
-            adSkipPending = false;
-          }
-        }, 300);
-
-        // Hard timeout: if still in ad after 15s at 16× something is wrong
-        setTimeout(() => {
-          if (fastForwardInterval) {
-            stopFastForward();
-            adSkipPending = false;
-            // Escalate to tier 4 only after tier 3 fails
-            attemptSkip();
-          }
-        }, 15000);
-        return;
-      } catch {
-        // Fall through to tier 4
-      }
-    }
-
-    // ── Tier 4: relay navigation (last resort — can cause YouTube to serve new ads) ─
-    chrome.runtime.sendMessage({
-      action: 'skipAd',
-      youtubeUrl: window.location.href,
-      videoId,
-      timestamp,
-    });
-
-    // adSkipPending stays true — restoreTimestamp() will apply the grace period
-    // which resets it after 6s once we land back on YouTube
+    // Release lock after 3s — allow re-try if the ad is still running
+    setTimeout(() => { skipLock = false; }, 3000);
   }
 
-  // MutationObserver watching for ad class changes AND ad element injection
-  let adObserver = null;
+  // ─── Observer — watch ONLY #movie_player class attribute ──────────────────────
+  // Narrow scope: only the player element, only class attribute, no subtree.
+  // This fires when YouTube adds/removes ad-showing — not on every DOM mutation.
 
-  function startAdObserver() {
-    if (adObserver) return;
-    // Watch the whole player container so we catch both class changes
-    // on the player AND new ad UI elements injected as children
-    const target = document.querySelector('#player-container-outer, #player-container, ytd-player, #player') || document.body;
+  let observer = null;
 
-    adObserver = new MutationObserver(() => {
+  function startObserver() {
+    const player = getPlayer();
+    if (!player || observer) return;
+
+    observer = new MutationObserver(() => {
       if (isAdPlaying()) attemptSkip();
     });
 
-    adObserver.observe(target, {
+    observer.observe(player, {
       attributes: true,
       attributeFilter: ['class'],
-      childList: true,
-      subtree: true,
+      subtree: false,
+      childList: false,
     });
+    console.log('[QuickReload] Observer attached to #movie_player');
   }
 
-  function stopAdObserver() {
-    if (adObserver) {
-      adObserver.disconnect();
-      adObserver = null;
-    }
+  function stopObserver() {
+    if (observer) { observer.disconnect(); observer = null; }
   }
 
-  // Polling fallback — catches cases where MutationObserver misses a class change
-  let adPollInterval = null;
+  // ─── Polling fallback ──────────────────────────────────────────────────────────
+  // Catches pre-roll ads that appear before observer attaches,
+  // and mid-rolls YouTube injects without a class mutation event.
 
-  function startAdPolling() {
-    if (adPollInterval) return;
-    adPollInterval = setInterval(() => {
+  let pollTimer = null;
+
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(() => {
       if (isAdPlaying()) attemptSkip();
-    }, POLL_INTERVAL_MS);
+    }, 700);
   }
 
-  function stopAdPolling() {
-    if (adPollInterval) {
-      clearInterval(adPollInterval);
-      adPollInterval = null;
-    }
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
-  // ─── 3. Player Ready Wait ────────────────────────────────────────────────────
-  // YouTube SPA: the player may not exist yet on initial load. Poll until ready.
+  // ─── Timestamp restoration ─────────────────────────────────────────────────────
 
-  function waitForPlayer(attempts = 0) {
-    if (attempts > 60) return; // give up after ~15s
+  function restoreTimestamp() {
+    const ts = parseFloat(new URLSearchParams(location.search).get('_qr_ts'));
+    if (!ts || ts < 1) return;
 
-    const player = document.querySelector('#movie_player');
-    const video = getVideoEl();
+    const clean = new URL(location.href);
+    clean.searchParams.delete('_qr_ts');
+    history.replaceState(null, '', clean.toString());
 
-    if (player && video) {
-      startAdObserver();
-      startAdPolling();
+    waitForSeekable(ts);
+  }
+
+  function waitForSeekable(t, n) {
+    n = n || 0;
+    if (n > 40) return;
+    const v = getVideo();
+    if (v && v.readyState >= 1 && v.duration > t) {
+      v.currentTime = Math.max(0, t - 1);
       return;
     }
-
-    setTimeout(() => waitForPlayer(attempts + 1), 250);
+    setTimeout(function() { waitForSeekable(t, n + 1); }, 250);
   }
 
-  // ─── 4. YouTube SPA Navigation Handling ─────────────────────────────────────
-  // YouTube changes pages via pushState/replaceState without full reloads.
-  // We hook into these to reset & reinitialise on each "page" change.
+  // ─── Init & SPA navigation ────────────────────────────────────────────────────
 
-  let currentVideoId = getVideoId();
+  function start() {
+    if (!getPlayer() || !getVideo()) {
+      setTimeout(start, 300);
+      return;
+    }
+    startObserver();
+    startPolling();
+    console.log('[QuickReload] Active on', location.href);
+  }
 
-  function onYouTubeNavigate() {
-    const newVideoId = getVideoId();
-    if (newVideoId === currentVideoId) return; // same video, no reset needed
+  function teardown() {
+    stopObserver();
+    stopPolling();
+    skipLock = false;
+  }
 
-    currentVideoId = newVideoId;
+  var currentVideoId = getVideoId();
 
-    // Tear down existing monitors
-    stopAdObserver();
-    stopAdPolling();
-    stopFastForward();
-    adSkipPending = false;
-
-    // Restart for the new video
-    waitForPlayer();
+  function onNavigate() {
+    var newId = getVideoId();
+    if (newId === currentVideoId) return;
+    currentVideoId = newId;
+    teardown();
+    start();
     restoreTimestamp();
   }
 
-  // Intercept history API calls YouTube uses for SPA navigation
-  const _pushState = history.pushState.bind(history);
-  const _replaceState = history.replaceState.bind(history);
+  var _push    = history.pushState.bind(history);
+  var _replace = history.replaceState.bind(history);
 
-  history.pushState = function (...args) {
-    _pushState(...args);
-    setTimeout(onYouTubeNavigate, 100);
-  };
+  history.pushState    = function() { _push.apply(history, arguments);    setTimeout(onNavigate, 150); };
+  history.replaceState = function() { _replace.apply(history, arguments); setTimeout(onNavigate, 150); };
+  window.addEventListener('popstate', function() { setTimeout(onNavigate, 150); });
 
-  history.replaceState = function (...args) {
-    _replaceState(...args);
-    setTimeout(onYouTubeNavigate, 100);
-  };
+  // ─── Manual QuickReload message ───────────────────────────────────────────────
 
-  window.addEventListener('popstate', () => setTimeout(onYouTubeNavigate, 100));
-  // ─── Manual QuickReload handler (timestamp-aware) ──────────────────────────
-  // content.js delegates quickReload to us on YouTube so we can preserve position.
-
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener(function(msg, _sender, sendResponse) {
     if (msg.action !== 'quickReload') return;
-
-    const video = getVideoEl();
-    const timestamp = video?.currentTime ?? 0;
-    const videoId = getVideoId();
-
     chrome.runtime.sendMessage({
       action: 'manualReloadYT',
-      youtubeUrl: window.location.href,
-      videoId,
-      timestamp,
+      youtubeUrl: location.href,
+      videoId: getVideoId(),
+      timestamp: (getVideo() || {}).currentTime || 0,
     });
-
     sendResponse({ ok: true });
     return true;
   });
-  // ─── Init ────────────────────────────────────────────────────────────────────
+
+  // ─── Boot ─────────────────────────────────────────────────────────────────────
 
   restoreTimestamp();
-  waitForPlayer();
-  console.debug('[QuickReload] YouTube script active');
+  start();
 
-  // Cleanup on tab unload
-  window.addEventListener('pagehide', () => {
-    stopAdObserver();
-    stopAdPolling();
-    stopFastForward();
-  });
+  window.addEventListener('pagehide', teardown);
+
 })();
