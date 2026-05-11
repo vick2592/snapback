@@ -203,7 +203,26 @@
   };
 
   window.addEventListener('popstate', () => setTimeout(onYouTubeNavigate, 100));
+  // ─── Manual QuickReload handler (timestamp-aware) ──────────────────────────
+  // content.js delegates quickReload to us on YouTube so we can preserve position.
 
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg.action !== 'quickReload') return;
+
+    const video = getVideoEl();
+    const timestamp = video?.currentTime ?? 0;
+    const videoId = getVideoId();
+
+    chrome.runtime.sendMessage({
+      action: 'manualReloadYT',
+      youtubeUrl: window.location.href,
+      videoId,
+      timestamp,
+    });
+
+    sendResponse({ ok: true });
+    return true;
+  });
   // ─── Init ────────────────────────────────────────────────────────────────────
 
   restoreTimestamp();

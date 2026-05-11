@@ -22,6 +22,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
+
+  if (msg.action === 'manualReloadYT') {
+    handleManualReloadYT(msg, sender.tab?.id);
+    sendResponse({ ok: true });
+    return true;
+  }
 });
 
 // ─── Quick Reload (all sites) ──────────────────────────────────────────────────
@@ -36,6 +42,18 @@ function handleQuickReload(tabId) {
       void chrome.runtime.lastError;
     });
   }, 200);
+}
+
+// ─── Manual YouTube Reload (no cooldown, user-initiated) ─────────────────────
+
+function handleManualReloadYT(msg, tabId) {
+  if (!tabId) return;
+  const { youtubeUrl, videoId, timestamp } = msg;
+  pendingForward.set(tabId, { youtubeUrl, videoId, timestamp });
+  const relayUrl = chrome.runtime.getURL('relay.html');
+  chrome.tabs.update(tabId, { url: relayUrl }, () => {
+    void chrome.runtime.lastError;
+  });
 }
 
 // ─── YouTube Ad Skip ──────────────────────────────────────────────────────────
