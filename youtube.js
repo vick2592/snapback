@@ -100,10 +100,10 @@
       timestamp,
     });
 
-    // Reset flag after cooldown (background enforces 30s tab-level cooldown too)
+    // Reset flag after background cooldown clears (3s) — ready for next ad
     setTimeout(() => {
       adSkipPending = false;
-    }, 31000);
+    }, 3500);
   }
 
   // MutationObserver watching for the ad-showing class on #movie_player

@@ -2,8 +2,10 @@
 // Handles navigation orchestration and per-tab cooldown for YouTube skip logic.
 
 // Cooldown map: tabId → timestamp of last skip attempt (ms)
+// Short window (3s) just prevents double-firing on the same ad event.
+// Resets immediately after the relay navigation completes so the next ad is catchable.
 const skipCooldown = new Map();
-const COOLDOWN_MS = 30000; // 30 seconds between skip attempts per tab
+const COOLDOWN_MS = 3000; // 3 seconds — prevents same-ad double-trigger only
 
 // Pending forward navigations: tabId → { youtubeUrl, videoId }
 const pendingForward = new Map();
@@ -92,6 +94,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (tab.url === relayUrl && pendingForward.has(tabId)) {
     const { youtubeUrl, videoId, timestamp } = pendingForward.get(tabId);
     pendingForward.delete(tabId);
+
+    // Reset cooldown now — the skip was successful, next ad should be catchable
+    skipCooldown.delete(tabId);
 
     // Short delay to let relay.html fully settle before navigating forward
     setTimeout(() => {
